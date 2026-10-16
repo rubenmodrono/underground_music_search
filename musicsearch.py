@@ -23,32 +23,58 @@ def http(url, data=None, headers=None):
     with urllib.request.urlopen(req, timeout=30) as r:
         return r.read().decode("utf-8", "replace")
 
+def _slug(t):
+    return re.sub(r"[^a-z0-9]+", "-", t.lower()).strip("-")
+
+def _norm(it, tags):
+    return {"source": "bandcamp", "artist": it.get("artist"), "title": it.get("title"),
+            "label": it.get("band_name") or it.get("artist"),
+            "url": it.get("tralbum_url") or it.get("item_url"),
+            "genre": it.get("genre"), "tags": ",".join(tags),
+            "country": it.get("country") or it.get("location"),
+            "released": it.get("release_date") or it.get("publish_date"),
+            "price": it.get("price"), "listeners": None}
+
+def _via_api(tags, sort, page, fmt):
+    body = json.dumps({"filters": {"format": fmt, "location": 0, "sort": sort,
+                                   "tags": [_slug(t) for t in tags]}, "page": page}).encode()
+    raw = http(DIG, body, {"Content-Type": "application/json", "Origin": "https://bandcamp.com",
+                           "Referer": "https://bandcamp.com/discover", "X-Requested-With": "XMLHttpRequest"})
+    try: j = json.loads(raw)
+    except ValueError: raise RuntimeError(f"respuesta no JSON de la API: {raw[:150]!r}")
+    return j.get("items") or j.get("results") or [], bool(j.get("more_available"))
+
+def _via_tagpage(tags, sort):
+    """Respaldo: lee el JSON incrustado (data-blob) en bandcamp.com/tag/<tag>."""
+    url = f"https://bandcamp.com/tag/{_slug(tags[0])}?sort_field={sort}"
+    if len(tags) > 1: url += "&tags=" + ",".join(_slug(t) for t in tags[1:])
+    h = http(url, headers={"Accept": "text/html"})
+    mm = re.search(r'data-blob="([^"]+)"', h)
+    if not mm: raise RuntimeError(f"la pagina de tag no trae datos (¿anti-bot?): {re.sub(r'<[^>]+>', ' ', h)[:150]!r}")
+    blob = json.loads(html.unescape(mm.group(1)))
+    res = []
+    def walk(o):
+        if isinstance(o, dict):
+            if "tralbum_url" in o or ("item_url" in o and "title" in o): res.append(o)
+            else: [walk(v) for v in o.values()]
+        elif isinstance(o, list): [walk(v) for v in o]
+    walk(blob)
+    return res, False
+
 def bandcamp(tags, sort, pages, fmt, geoname):
-    """Usa el endpoint JSON interno que alimenta bandcamp.com/tag/<x>."""
-    out, page = [], 1
+    """Busca por tags: primero la API JSON interna, y si falla, el JSON de la pagina de tag."""
+    out = []
     for page in range(1, pages + 1):
-        body = json.dumps({"filters": {"format": fmt, "location": geoname, "sort": sort,
-                                       "tags": tags}, "page": page}).encode()
-        try:
-            j = json.loads(http(DIG, body, {"Content-Type": "application/json"}))
-        except Exception as e:
-            print(f"[bandcamp] pagina {page} fallo: {e}", file=sys.stderr)
-            if page == 1: raise RuntimeError(f"Bandcamp no responde ({e})")
-            break
-        items = j.get("items") or []
-        if not items: break
-        for it in items:
-            out.append({
-                "source": "bandcamp",
-                "artist": it.get("artist"), "title": it.get("title"),
-                "label": it.get("band_name") or it.get("artist"),
-                "url": it.get("tralbum_url"),
-                "genre": it.get("genre"), "tags": ",".join(tags),
-                "country": it.get("country") or it.get("location"),
-                "released": it.get("release_date") or it.get("publish_date"),
-                "price": it.get("price"), "listeners": None,
-            })
-        if not j.get("more_available"): break
+        try: items, more = _via_api(tags, sort, page, fmt)
+        except Exception as e1:
+            print(f"[bandcamp] API fallo ({e1}); pruebo la pagina de tag", file=sys.stderr)
+            try: items, more = _via_tagpage(tags, sort)
+            except Exception as e2:
+                if page == 1: raise RuntimeError(f"API: {e1} | pagina: {e2}")
+                break
+            page = pages  # la pagina de tag no pagina: una sola pasada
+        out += [_norm(i, tags) for i in items if i.get("tralbum_url") or i.get("item_url")]
+        if not more: break
         time.sleep(1.0)
     return out
 
