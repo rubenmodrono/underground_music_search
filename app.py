@@ -55,6 +55,16 @@ def learn(c, uid, it, keep):
 def n_decisions(c, uid):
     return c.execute("SELECT COUNT(*) FROM candidates WHERE user_id=? AND status IN('kept','rejected')", (uid,)).fetchone()[0]
 
+RUNS = {}  # search_id -> texto de estado ("ejecutando…", resultado o error)
+
+def run_bg(s):
+    sid = s["id"]; RUNS[sid] = "⏳ Ejecutando… (puede tardar varios minutos)"
+    try:
+        new, acc = run_search(db(), s)
+        RUNS[sid] = f"✔ {datetime.now():%H:%M} · {new} nuevos, {acc} pasan al auditor" + ("" if new else " (0 resultados: revisa los tags o la conexión)")
+    except Exception as e:
+        RUNS[sid] = f"✖ {datetime.now():%H:%M} · falló: {e}"
+
 # ---------- agentes de sitio + auditoria ----------
 def run_search(c, s):
     tags = [t.strip() for t in s["tags"].split(",") if t.strip()]
@@ -141,7 +151,8 @@ class H(BaseHTTPRequestHandler):
             rows = c.execute("SELECT * FROM searches WHERE user_id=?", (uid,)).fetchall()
             body = "<form method=post action=/search/add><select name=site><option>bandcamp<option>hypeddit</select> Tags: <input name=tags placeholder='hypnotic techno, raw techno'> Orden: <select name=sort><option>date<option>pop<option>random</select><br>Últimos <input name=since_days size=3> días · Máx seguidores <input name=max_listeners size=6> <label><input type=checkbox name=free_only value=1> solo gratis</label> <button>Añadir</button></form>"
             for s in rows:
-                body += f"<div class=card>{s['site']} · <b>{html.escape(s['tags'])}</b> · {s['sort']} · {s['since_days'] or '-'}d · ≤{s['max_listeners'] or '-'} seg.<form method=post action=/search/run style=display:inline><input type=hidden name=id value={s['id']}><button>Ejecutar ahora</button></form><form method=post action=/search/del style=display:inline><input type=hidden name=id value={s['id']}><button class=r>Borrar</button></form></div>"
+                body += f"<div class=card>{s['site']} · <b>{html.escape(s['tags'])}</b> · {s['sort']} · {s['since_days'] or '-'}d · ≤{s['max_listeners'] or '-'} seg.<div class=mut>{html.escape(RUNS.get(s['id'], 'Sin ejecuciones desde que arrancó el servidor'))}</div><form method=post action=/search/run style=display:inline><input type=hidden name=id value={s['id']}><button>Ejecutar ahora</button></form><form method=post action=/search/del style=display:inline><input type=hidden name=id value={s['id']}><button class=r>Borrar</button></form></div>"
+            if any("Ejecutando" in v for v in RUNS.values()): body += "<meta http-equiv=refresh content=5>"
             body += "<p class=mut>Se ejecutan solas cada día a las 10:00 (modo daemon o cron).</p>"
         elif p == "/taste":
             ws = c.execute("SELECT feat,w FROM weights WHERE user_id=? ORDER BY w DESC", (uid,)).fetchall()
@@ -174,8 +185,8 @@ class H(BaseHTTPRequestHandler):
             c.execute("DELETE FROM searches WHERE id=? AND user_id=?", (f.get("id"), uid)); c.commit()
         elif self.path == "/search/run":
             s = c.execute("SELECT * FROM searches WHERE id=? AND user_id=?", (f.get("id"), uid)).fetchone()
-            if s: threading.Thread(target=lambda: run_search(db(), s), daemon=True).start()
-            return self.redir("/")
+            if s and "Ejecutando" not in RUNS.get(s["id"], ""): threading.Thread(target=run_bg, args=(s,), daemon=True).start()
+            return self.redir("/searches")
         self.redir("/searches")
 
 def serve(port, host="127.0.0.1"):

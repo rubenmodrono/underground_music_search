@@ -32,7 +32,9 @@ def bandcamp(tags, sort, pages, fmt, geoname):
         try:
             j = json.loads(http(DIG, body, {"Content-Type": "application/json"}))
         except Exception as e:
-            print(f"[bandcamp] pagina {page} fallo: {e}", file=sys.stderr); break
+            print(f"[bandcamp] pagina {page} fallo: {e}", file=sys.stderr)
+            if page == 1: raise RuntimeError(f"Bandcamp no responde ({e})")
+            break
         items = j.get("items") or []
         if not items: break
         for it in items:
