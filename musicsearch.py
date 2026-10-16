@@ -91,6 +91,7 @@ def _via_tagpage(tags, sort):
 
 def bandcamp(tags, sort, pages, fmt, geoname):
     """Busca por tags: primero la API JSON interna, y si falla, el JSON de la pagina de tag."""
+    if not tags: raise RuntimeError("falta al menos un tag")
     out = []
     for page in range(1, pages + 1):
         try: items, more = _via_api(tags, sort, page, fmt)

@@ -69,6 +69,7 @@ def run_bg(s):
 def run_search(c, s):
     tags = [t.strip() for t in s["tags"].split(",") if t.strip()]
     if s["site"] == "bandcamp":
+        if not tags: raise RuntimeError("esta búsqueda no tiene tags: bórrala y créala escribiendo al menos uno (ej. raw techno)")
         items = ms.bandcamp(tags, s["sort"], 2, "all", 0)
         for i in items: ms.enrich(i); time.sleep(0.8)
     else:
@@ -178,6 +179,7 @@ class H(BaseHTTPRequestHandler):
                 c.execute("UPDATE candidates SET status=? WHERE id=?", ("kept" if keep else "rejected", r["id"])); c.commit()
             return self.redir("/")
         if self.path == "/search/add":
+            if f["site"] == "bandcamp" and not [t for t in f.get("tags", "").split(",") if t.strip()]: return self.redir("/searches")
             ti = lambda k: int(f[k]) if f.get(k, "").isdigit() else None
             c.execute("INSERT INTO searches(user_id,site,tags,sort,since_days,max_listeners,free_only) VALUES(?,?,?,?,?,?,?)",
                       (uid, f["site"], f.get("tags", ""), f.get("sort", "date"), ti("since_days"), ti("max_listeners"), 1 if f.get("free_only") else 0)); c.commit()
