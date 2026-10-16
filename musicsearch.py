@@ -18,7 +18,7 @@ DIG = "https://bandcamp.com/api/hub/2/dig_deeper"
 
 _PW = {}
 
-def browser_get(url):
+def _browser_get(url):
     """Abre la URL en un Chrome real (Playwright) para superar el 'Client Challenge' de Bandcamp.
     Usa un perfil persistente (./.browser-profile): la primera vez puede salir una ventana de Chrome; no la cierres."""
     try: from playwright.sync_api import sync_playwright
@@ -36,6 +36,27 @@ def browser_get(url):
     try: page.wait_for_selector("[data-blob], [data-tralbum]", timeout=10000)
     except Exception: pass
     return page.content()
+
+_EXEC = None
+
+def browser_get(url):
+    """Playwright (API sync) solo funciona en el hilo que lo arranco: todo pasa por un unico hilo.
+    Si el usuario cerro la ventana de Chrome, se relanza una vez."""
+    global _EXEC
+    from concurrent.futures import ThreadPoolExecutor
+    if _EXEC is None: _EXEC = ThreadPoolExecutor(max_workers=1)
+    def job():
+        try: return _browser_get(url)
+        except RuntimeError: raise
+        except Exception as e:
+            try: _PW.get("ctx") and _PW["ctx"].close()
+            except Exception: pass
+            try: _PW.get("p") and _PW["p"].stop()
+            except Exception: pass
+            _PW.clear()
+            try: return _browser_get(url)
+            except Exception as e2: raise RuntimeError(f"Chrome/Playwright fallo: {e2} (¿cerraste la ventana de Chrome? no la cierres mientras busca)")
+    return _EXEC.submit(job).result()
 
 def http(url, data=None, headers=None):
     h = {"User-Agent": UA, "Accept": "application/json, text/html"}
