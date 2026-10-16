@@ -63,6 +63,7 @@ def run_bg(s):
         new, acc = run_search(db(), s)
         RUNS[sid] = f"✔ {datetime.now():%H:%M} · {new} nuevos, {acc} pasan al auditor" + ("" if new else " (0 resultados: revisa los tags o la conexión)")
     except Exception as e:
+        import traceback; traceback.print_exc()
         RUNS[sid] = f"✖ {datetime.now():%H:%M} · falló: {e}"
 
 # ---------- agentes de sitio + auditoria ----------

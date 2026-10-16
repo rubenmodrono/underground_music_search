@@ -27,7 +27,13 @@ def _browser_get(url):
     if not _PW:
         p = sync_playwright().start()
         prof = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".browser-profile")
-        ctx = p.chromium.launch_persistent_context(prof, channel="chrome", headless=False, args=["--window-size=900,700"])
+        ctx, errs = None, []
+        for ch in ("chrome", "msedge", None):   # Chrome, Edge, o el Chromium de Playwright
+            try:
+                ctx = p.chromium.launch_persistent_context(prof, channel=ch, headless=False, args=["--window-size=900,700"]); break
+            except Exception as e: errs.append(f"{ch or 'chromium'}: {str(e).splitlines()[0][:120]}")
+        if ctx is None:
+            p.stop(); raise RuntimeError("no se pudo abrir ningun navegador -> " + " | ".join(errs))
         _PW.update(p=p, ctx=ctx, page=ctx.pages[0] if ctx.pages else ctx.new_page())
     page = _PW["page"]
     page.goto(url, wait_until="domcontentloaded", timeout=60000)
