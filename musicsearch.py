@@ -18,9 +18,8 @@ DIG = "https://bandcamp.com/api/hub/2/dig_deeper"
 
 _PW = {}
 
-def _browser_get(url):
-    """Abre la URL en un Chrome real (Playwright) para superar el 'Client Challenge' de Bandcamp.
-    Usa un perfil persistente (./.browser-profile): la primera vez puede salir una ventana de Chrome; no la cierres."""
+def _page():
+    """Devuelve la pagina de Playwright, lanzando el navegador la primera vez (en el hilo del navegador)."""
     try: from playwright.sync_api import sync_playwright
     except ImportError:
         raise RuntimeError("Bandcamp exige un navegador real. Instala: pip install playwright  (usa tu Google Chrome, no hace falta 'playwright install')")
@@ -35,24 +34,46 @@ def _browser_get(url):
         if ctx is None:
             p.stop(); raise RuntimeError("no se pudo abrir ningun navegador -> " + " | ".join(errs))
         _PW.update(p=p, ctx=ctx, page=ctx.pages[0] if ctx.pages else ctx.new_page())
-    page = _PW["page"]
+    return _PW["page"]
+
+def _goto(page, url, wait_sel="[data-blob], [data-tralbum]"):
     page.goto(url, wait_until="domcontentloaded", timeout=60000)
     try: page.wait_for_function("!document.title.includes('Client Challenge') && !document.body.innerText.includes('Client Challenge')", timeout=45000)
     except Exception: pass
-    try: page.wait_for_selector("[data-blob], [data-tralbum]", timeout=10000)
+    try: page.wait_for_selector(wait_sel, timeout=15000)
     except Exception: pass
+
+def _browser_get(url):
+    page = _page(); _goto(page, url)
     return page.content()
+
+_JS_CARDS = """() => [...document.querySelectorAll('li.tralbum-card')].map(li => {
+  const a = li.querySelector('a.stretch-link'), t = li.querySelector('.title'), at = li.querySelector('.attribution-meta'), g = li.querySelector('.info-pill');
+  return {href: a && a.href, title: t && t.innerText.trim(), artist: at && at.innerText.trim(), genre: g && g.innerText.trim()};
+})"""
+
+def _browser_discover(url, clicks):
+    """Abre bandcamp.com/discover/..., pulsa 'Ver mas resultados' `clicks` veces y lee las tarjetas del DOM."""
+    page = _page(); _goto(page, url, "li.tralbum-card")
+    for _ in range(clicks):
+        n = page.locator("li.tralbum-card").count()
+        btn = page.locator("#view-more")
+        if not btn.count(): break
+        btn.first.click()
+        try: page.wait_for_function(f"document.querySelectorAll('li.tralbum-card').length > {n}", timeout=20000)
+        except Exception: break
+    return page.evaluate(_JS_CARDS)
 
 _EXEC = None
 
-def browser_get(url):
+def browser_run(fn, *args):
     """Playwright (API sync) solo funciona en el hilo que lo arranco: todo pasa por un unico hilo.
     Si el usuario cerro la ventana de Chrome, se relanza una vez."""
     global _EXEC
     from concurrent.futures import ThreadPoolExecutor
     if _EXEC is None: _EXEC = ThreadPoolExecutor(max_workers=1)
     def job():
-        try: return _browser_get(url)
+        try: return fn(*args)
         except RuntimeError: raise
         except Exception as e:
             try: _PW.get("ctx") and _PW["ctx"].close()
@@ -60,9 +81,12 @@ def browser_get(url):
             try: _PW.get("p") and _PW["p"].stop()
             except Exception: pass
             _PW.clear()
-            try: return _browser_get(url)
+            try: return fn(*args)
             except Exception as e2: raise RuntimeError(f"Chrome/Playwright fallo: {e2} (¿cerraste la ventana de Chrome? no la cierres mientras busca)")
     return _EXEC.submit(job).result()
+
+def browser_get(url):
+    return browser_run(_browser_get, url)
 
 def http(url, data=None, headers=None):
     h = {"User-Agent": UA, "Accept": "application/json, text/html"}
@@ -99,24 +123,17 @@ def _via_api(tags, sort, page, fmt):
     except ValueError: raise RuntimeError(f"respuesta no JSON de la API: {raw[:150]!r}")
     return j.get("items") or j.get("results") or [], bool(j.get("more_available"))
 
-def _via_tagpage(tags, sort):
-    """Respaldo: lee el JSON incrustado (data-blob) en bandcamp.com/tag/<tag>."""
-    url = f"https://bandcamp.com/tag/{_slug(tags[0])}?sort_field={sort}"
-    if len(tags) > 1: url += "&tags=" + ",".join(_slug(t) for t in tags[1:])
-    h = http(url, headers={"Accept": "text/html"})
-    try: open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "debug_tagpage.html"), "w", encoding="utf-8").write(f"<!-- {url} -->\n" + h)
-    except Exception: pass
-    mm = re.search(r'data-blob="([^"]+)"', h)
-    if not mm: raise RuntimeError(f"la pagina de tag no trae datos (¿anti-bot?): {re.sub(r'<[^>]+>', ' ', h)[:150]!r}")
-    blob = json.loads(html.unescape(mm.group(1)))
+def _via_tagpage(tags, sort, pages=1):
+    """Respaldo: carga bandcamp.com/discover/<tag> en el navegador y lee las tarjetas (la 1ª etiqueta va en la ruta, el resto como t=)."""
+    s = {"date": "new", "pop": "top", "random": "rand"}.get(sort, "new")
+    url = f"https://bandcamp.com/discover/{_slug(tags[0])}?s={s}" + "".join(f"&t={_slug(t)}" for t in tags[1:])
+    cards = browser_run(_browser_discover, url, max(0, pages - 1))
     res = []
-    def walk(o):
-        if isinstance(o, dict):
-            if "tralbum_url" in o or ("item_url" in o and "title" in o): res.append(o)
-            else: [walk(v) for v in o.values()]
-        elif isinstance(o, list): [walk(v) for v in o]
-    walk(blob)
-    if not res: raise RuntimeError(f"la pagina cargo pero no encontre discos (claves: {list(blob)[:8]}); revisa debug_tagpage.html")
+    for c in cards:
+        if not c.get("href"): continue
+        art = re.sub(r"^(de|by|por|von|par)\s+", "", c.get("artist") or "", flags=re.I)
+        res.append({"tralbum_url": c["href"].split("?")[0], "title": c.get("title"), "artist": art, "genre": c.get("genre")})
+    if not res: raise RuntimeError(f"la pagina {url} cargo pero sin discos (¿tag inexistente o combinacion vacia?)")
     return res, False
 
 def bandcamp(tags, sort, pages, fmt, geoname):
@@ -127,7 +144,7 @@ def bandcamp(tags, sort, pages, fmt, geoname):
         try: items, more = _via_api(tags, sort, page, fmt)
         except Exception as e1:
             print(f"[bandcamp] API fallo ({e1}); pruebo la pagina de tag", file=sys.stderr)
-            try: items, more = _via_tagpage(tags, sort)
+            try: items, more = _via_tagpage(tags, sort, pages)
             except Exception as e2:
                 if page == 1: raise RuntimeError(f"API: {e1} | pagina: {e2}")
                 break
