@@ -10,18 +10,46 @@ Uso:
   python3 musicsearch.py bandcamp -t "hard groove" --since-days 14 --csv out.csv
   python3 musicsearch.py hypeddit --pages 1
 """
-import argparse, csv, json, re, sys, time, urllib.request, html
+import argparse, csv, json, os, re, sys, time, urllib.request, urllib.error, html
 from datetime import datetime, timedelta, timezone
 
 UA = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/124 Safari/537.36"
 DIG = "https://bandcamp.com/api/hub/2/dig_deeper"
 
+_PW = {}
+
+def browser_get(url):
+    """Abre la URL en un Chrome real (Playwright) para superar el 'Client Challenge' de Bandcamp.
+    Usa un perfil persistente (./.browser-profile): la primera vez puede salir una ventana de Chrome; no la cierres."""
+    try: from playwright.sync_api import sync_playwright
+    except ImportError:
+        raise RuntimeError("Bandcamp exige un navegador real. Instala: pip install playwright  (usa tu Google Chrome, no hace falta 'playwright install')")
+    if not _PW:
+        p = sync_playwright().start()
+        prof = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".browser-profile")
+        ctx = p.chromium.launch_persistent_context(prof, channel="chrome", headless=False, args=["--window-size=900,700"])
+        _PW.update(p=p, ctx=ctx, page=ctx.pages[0] if ctx.pages else ctx.new_page())
+    page = _PW["page"]
+    page.goto(url, wait_until="domcontentloaded", timeout=60000)
+    try: page.wait_for_function("!document.title.includes('Client Challenge') && !document.body.innerText.includes('Client Challenge')", timeout=45000)
+    except Exception: pass
+    try: page.wait_for_selector("[data-blob], [data-tralbum]", timeout=10000)
+    except Exception: pass
+    return page.content()
+
 def http(url, data=None, headers=None):
     h = {"User-Agent": UA, "Accept": "application/json, text/html"}
     h.update(headers or {})
     req = urllib.request.Request(url, data=data, headers=h)
-    with urllib.request.urlopen(req, timeout=30) as r:
-        return r.read().decode("utf-8", "replace")
+    try:
+        with urllib.request.urlopen(req, timeout=30) as r:
+            txt = r.read().decode("utf-8", "replace")
+    except urllib.error.HTTPError as e:
+        txt = e.read().decode("utf-8", "replace")
+        if e.code not in (403, 429, 503): raise
+    if data is None and "bandcamp.com" in url and "Client Challenge" in txt[:5000]:
+        return browser_get(url)
+    return txt
 
 def _slug(t):
     return re.sub(r"[^a-z0-9]+", "-", t.lower()).strip("-")

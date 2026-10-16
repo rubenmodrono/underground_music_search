@@ -12,3 +12,11 @@ Solo web: `python3 app.py serve --port 8080`. Con cron: `0 10 * * * cd /ruta/mus
 CLI suelta: `python3 musicsearch.py bandcamp -t "raw techno" --pages 2`.
 
 Estado: la web y el aprendizaje están probados con datos demo; las búsquedas reales en Bandcamp/Hypeddit no se han probado todavía.
+
+## Bandcamp y el "Client Challenge"
+Bandcamp bloquea clientes HTTP simples con una comprobación anti-bot. La herramienta usa entonces tu Google Chrome
+a través de Playwright (se abre una ventana de Chrome mientras busca; déjala abierta):
+
+    pip install playwright
+
+No hace falta `playwright install`: se usa el Chrome ya instalado.
