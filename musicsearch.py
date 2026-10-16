@@ -104,6 +104,8 @@ def _via_tagpage(tags, sort):
     url = f"https://bandcamp.com/tag/{_slug(tags[0])}?sort_field={sort}"
     if len(tags) > 1: url += "&tags=" + ",".join(_slug(t) for t in tags[1:])
     h = http(url, headers={"Accept": "text/html"})
+    try: open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "debug_tagpage.html"), "w", encoding="utf-8").write(f"<!-- {url} -->\n" + h)
+    except Exception: pass
     mm = re.search(r'data-blob="([^"]+)"', h)
     if not mm: raise RuntimeError(f"la pagina de tag no trae datos (¿anti-bot?): {re.sub(r'<[^>]+>', ' ', h)[:150]!r}")
     blob = json.loads(html.unescape(mm.group(1)))
@@ -114,6 +116,7 @@ def _via_tagpage(tags, sort):
             else: [walk(v) for v in o.values()]
         elif isinstance(o, list): [walk(v) for v in o]
     walk(blob)
+    if not res: raise RuntimeError(f"la pagina cargo pero no encontre discos (claves: {list(blob)[:8]}); revisa debug_tagpage.html")
     return res, False
 
 def bandcamp(tags, sort, pages, fmt, geoname):

@@ -2,3 +2,4 @@ music.db
 __pycache__/
 *.csv
 .browser-profile/
+debug_tagpage.html
